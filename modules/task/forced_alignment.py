@@ -659,6 +659,14 @@ class LitForcedAlignmentTask(pl.LightningModule):
             consistency_loss = ZERO
             pseudo_label_loss = ZERO
 
+        # print(f"{ph_frame_GHM_loss=}")
+        # print(f"{ph_edge_GHM_loss=}")
+        # print(f"{ph_edge_EMD_loss=}")
+        # print(f"{ph_edge_diff_loss=}")
+        # print(f"{ctc_GHM_loss=}")
+        # print(f"{consistency_loss=}")
+        # print(f"{pseudo_label_loss=}")
+
         losses = [
             ph_frame_GHM_loss,
             ph_edge_GHM_loss,
@@ -690,6 +698,7 @@ class LitForcedAlignmentTask(pl.LightningModule):
                 ph_frame,  # (B, T)
                 ph_mask,  # (B vocab_size)
                 label_type,  # (B)
+                data_name,
             ) = batch
 
             (
@@ -711,6 +720,9 @@ class LitForcedAlignmentTask(pl.LightningModule):
                 label_type,
                 valid=False,
             )
+
+            if any([torch.isnan(loss).any() for loss in losses]): # use assert?
+                raise Exception("Error! loss is NaN", data_name)
 
             schedule_weight = self._losses_schedulers_call()
             self._losses_schedulers_step()
@@ -748,6 +760,7 @@ class LitForcedAlignmentTask(pl.LightningModule):
             ph_frame,  # (B, T)
             ph_mask,  # (B vocab_size)
             label_type,  # (B)
+            data_name,
         ) = batch
 
         ph_seq_g2p = ["SP"]
