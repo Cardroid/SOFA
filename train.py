@@ -5,6 +5,7 @@ import click
 import lightning as pl
 import torch
 import yaml
+from lightning.pytorch.callbacks import ModelCheckpoint
 from torch.utils.data import DataLoader
 
 from dataset import MixedDataset, WeightedBinningAudioBatchSampler, collate_fn
@@ -46,9 +47,7 @@ from modules.task.forced_alignment import LitForcedAlignmentTask
 )
 def main(config_path: str, data_folder: str, pretrained_model_path, resume):
     data_folder = pathlib.Path(data_folder)
-    os.environ[
-        "TORCH_CUDNN_V8_API_ENABLED"
-    ] = "1"  # Prevent unacceptable slowdowns when using 16 precision
+    os.environ["TORCH_CUDNN_V8_API_ENABLED"] = "1"  # Prevent unacceptable slowdowns when using 16 precision
 
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
@@ -65,10 +64,8 @@ def main(config_path: str, data_folder: str, pretrained_model_path, resume):
     pl.seed_everything(config["random_seed"], workers=True)
 
     # define dataset
-    num_workers = config['dataloader_workers']
-    train_dataset = MixedDataset(
-        config["data_augmentation_size"], data_folder / "binary", prefix="train"
-    )
+    num_workers = config["dataloader_workers"]
+    train_dataset = MixedDataset(config["data_augmentation_size"], data_folder / "binary", prefix="train")
     train_sampler = WeightedBinningAudioBatchSampler(
         train_dataset.get_label_types(),
         train_dataset.get_wav_lengths(),
@@ -107,8 +104,30 @@ def main(config_path: str, data_folder: str, pretrained_model_path, resume):
         config["data_augmentation_size"] > 0,
     )
 
+    checkpoint_loss_callback = ModelCheckpoint(
+        dirpath=str(pathlib.Path("ckpt") / config["model_name"]),
+        filename="checkpoint_{epoch:02d}_best",
+        monitor="valid/total_loss",
+        mode="min",
+        every_n_epochs=1,
+        save_top_k=1,
+    )
+
+    checkpoint_step_callback = ModelCheckpoint(
+        dirpath=str(pathlib.Path("ckpt") / config["model_name"]),
+        filename="checkpoint_{epoch:02d}_{step}",
+        monitor="step",
+        mode="max",
+        every_n_epochs=1,
+        save_top_k=3,
+    )
+
     # trainer
     trainer = pl.Trainer(
+        callbacks=[
+            checkpoint_loss_callback,
+            checkpoint_step_callback,
+        ],
         accelerator=config["accelerator"],
         devices=config["devices"],
         precision=config["precision"],
@@ -129,9 +148,8 @@ def main(config_path: str, data_folder: str, pretrained_model_path, resume):
     elif resume:
         # resume training state
         ckpt_path_list = (pathlib.Path("ckpt") / config["model_name"]).rglob("*.ckpt")
-        ckpt_path_list = sorted(
-            ckpt_path_list, key=lambda x: int(x.stem.split("step=")[-1]), reverse=True
-        )
+        ckpt_path_list = filter(lambda x: "step=" in x.stem, ckpt_path_list)
+        ckpt_path_list = sorted(ckpt_path_list, key=lambda x: int(x.stem.split("step=")[-1]), reverse=True)
         ckpt_path = str(ckpt_path_list[0]) if len(ckpt_path_list) > 0 else None
 
     # start training
@@ -144,7 +162,8 @@ def main(config_path: str, data_folder: str, pretrained_model_path, resume):
 
     # Discard the optimizer and save
     trainer.save_checkpoint(
-        str(pathlib.Path("ckpt") / config["model_name"]) + ".ckpt", weights_only=True
+        str((pathlib.Path("ckpt") / config["model_name"]) / "checkpoint_last.ckpt"),
+        weights_only=True,
     )
 
 
