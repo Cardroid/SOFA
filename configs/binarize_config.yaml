@@ -26,3 +26,5 @@ data_augmentation:
   key_shift_choices: [ 1, 2, 3, 4, 5, 6,-1,-2,-3,-4,-5,-6 ]
 
 max_length: 45 # unit: second
+
+error_check: false

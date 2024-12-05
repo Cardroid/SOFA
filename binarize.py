@@ -1,4 +1,6 @@
+import os
 import pathlib
+import traceback
 import warnings
 
 import click
@@ -23,6 +25,7 @@ class ForcedAlignmentBinarizer:
         ignored_phonemes,
         melspec_config,
         max_length,
+        error_check=False,
     ):
         self.data_folder = pathlib.Path(data_folder)
         self.valid_set_size = valid_set_size
@@ -41,6 +44,7 @@ class ForcedAlignmentBinarizer:
         self.frame_length = self.melspec_config["hop_length"] / self.sample_rate
 
         self.get_melspec = MelSpecExtractor(**melspec_config, device=self.device)
+        self.error_check = error_check
 
     @staticmethod
     def get_vocab(data_folder_path, ignored_phonemes):
@@ -119,34 +123,34 @@ class ForcedAlignmentBinarizer:
     ):
         print(f"Binarizing {prefix} set...")
 
-        h5py_file_path = pathlib.Path(binary_data_folder) / (prefix + ".h5py")
-        h5py_file = h5py.File(h5py_file_path, "w")
-        h5py_meta_data = h5py_file.create_group("meta_data")
-        items_meta_data = {"label_types": [], "wav_lengths": []}
-        h5py_items = h5py_file.create_group("items")
+        binary_data_folder_path = pathlib.Path(binary_data_folder)
+        h5py_file_path = binary_data_folder_path / (prefix + ".h5py")
+        if not self.error_check:
+            h5py_file = h5py.File(h5py_file_path, "w")
+            h5py_meta_data = h5py_file.create_group("meta_data")
+            items_meta_data = {"label_types": [], "wav_lengths": []}
+            h5py_items = h5py_file.create_group("items")
 
         label_type_to_id = {"no_label": 0, "weak_label": 1, "full_label": 2}
+        if self.error_check:
+            error_log_f = open(binary_data_folder_path / f"{prefix}_error.log", "w", encoding="utf-8")
 
         idx = 0
         total_time = 0.0
         for _, item in tqdm(meta_data.iterrows(), total=meta_data.shape[0]):
+            wav_path = pathlib.Path(item.wav_path)
             try:
                 # input_feature: [data_augmentation.size+1,input_dim,T]
-                waveform = load_wav(item.wav_path, self.device, self.sample_rate)
+                waveform = load_wav(wav_path, self.device, self.sample_rate)
                 input_feature = self.get_melspec(waveform)
 
                 wav_length = len(waveform) / self.sample_rate
                 T = input_feature.shape[-1] * self.scale_factor
                 if wav_length > self.max_length:
                     print(
-                        f"Item {item.wav_path} has a length of {wav_length}s, which is too long, skip it."
+                        f"Item {wav_path} has a length of {wav_length}s, which is too long, skip it."
                     )
                     continue
-                else:
-                    h5py_item_data = h5py_items.create_group(str(idx))
-                    items_meta_data["wav_lengths"].append(wav_length)
-                    idx += 1
-                    total_time += wav_length
 
                 if enable_data_augmentation:
                     input_features = [input_feature]
@@ -168,10 +172,6 @@ class ForcedAlignmentBinarizer:
                     input_feature - input_feature.mean(dim=[1, 2], keepdim=True)
                 ) / input_feature.std(dim=[1, 2], keepdim=True)
 
-                h5py_item_data["input_feature"] = (
-                    input_feature.cpu().numpy().astype("float32")
-                )
-
                 # label_type: []
                 label_type_id = label_type_to_id[item.label_type]
                 if label_type_id == 2:
@@ -179,8 +179,6 @@ class ForcedAlignmentBinarizer:
                         label_type_id = 1
                     if len(item.ph_seq) == 0:
                         label_type_id = 0
-                h5py_item_data["label_type"] = label_type_id
-                items_meta_data["label_types"].append(label_type_id)
 
                 if label_type_id == 0:
                     # ph_seq: [S]
@@ -261,11 +259,6 @@ class ForcedAlignmentBinarizer:
                 else:
                     raise ValueError("Unknown label type.")
 
-                h5py_item_data["ph_seq"] = ph_seq.astype("int32")
-                h5py_item_data["ph_edge"] = ph_edge.astype("float32")
-                h5py_item_data["ph_frame"] = ph_frame.astype("int32")
-                h5py_item_data["ph_mask"] = ph_mask.astype("int32")
-
                 # print(
                 #     h5py_item_data["input_feature"].shape,
                 #     np.array(h5py_item_data["label_type"]),
@@ -288,31 +281,58 @@ class ForcedAlignmentBinarizer:
                 #     == h5py_item_data["ph_frame"].shape[0]
                 # )
             except Exception as e:
-                e.args += (item.wav_path,)
+                e.args += (wav_path,)
+                print(traceback.format_exc())
                 print(e)
+                if self.error_check:
+                    error_log_f.write(f"{e}\n")
                 continue
-        for k, v in items_meta_data.items():
-            h5py_meta_data[k] = np.array(v)
-        h5py_file.close()
-        full_label_ratio = items_meta_data["label_types"].count(2) / len(
-            items_meta_data["label_types"]
-        )
-        weak_label_ratio = items_meta_data["label_types"].count(1) / len(
-            items_meta_data["label_types"]
-        )
-        no_label_ratio = items_meta_data["label_types"].count(0) / len(
-            items_meta_data["label_types"]
-        )
-        print(
-            "Data compression ratio: \n"
-            f"    full label data: {100 * full_label_ratio:.2f} %,\n"
-            f"    weak label data: {100 * weak_label_ratio:.2f} %,\n"
-            f"    no label data: {100 * no_label_ratio:.2f} %."
-        )
-        print(
-            f"Successfully binarized {prefix} set, "
-            f"total time {total_time:.2f}s, saved to {h5py_file_path}"
-        )
+            else:
+                if not self.error_check:
+                    h5py_item_data = h5py_items.create_group(str(idx))
+
+                    items_meta_data["wav_lengths"].append(wav_length)
+                    items_meta_data["label_types"].append(label_type_id)
+
+                    h5py_item_data["ph_seq"] = ph_seq.astype("int32")
+                    h5py_item_data["ph_edge"] = ph_edge.astype("float32")
+                    h5py_item_data["ph_frame"] = ph_frame.astype("int32")
+                    h5py_item_data["ph_mask"] = ph_mask.astype("int32")
+
+                    h5py_item_data["input_feature"] = (
+                        input_feature.cpu().numpy().astype("float32")
+                    )
+                    h5py_item_data["label_type"] = label_type_id
+                    h5py_item_data["data_name"] = wav_path.stem
+
+                total_time += wav_length
+                idx += 1
+
+        if self.error_check:
+            error_log_f.close()
+        else:
+            for k, v in items_meta_data.items():
+                h5py_meta_data[k] = np.array(v)
+            h5py_file.close()
+            full_label_ratio = items_meta_data["label_types"].count(2) / len(
+                items_meta_data["label_types"]
+            )
+            weak_label_ratio = items_meta_data["label_types"].count(1) / len(
+                items_meta_data["label_types"]
+            )
+            no_label_ratio = items_meta_data["label_types"].count(0) / len(
+                items_meta_data["label_types"]
+            )
+            print(
+                "Data compression ratio: \n"
+                f"    full label data: {100 * full_label_ratio:.2f} %,\n"
+                f"    weak label data: {100 * weak_label_ratio:.2f} %,\n"
+                f"    no label data: {100 * no_label_ratio:.2f} %."
+            )
+            print(
+                f"Successfully binarized {prefix} set, "
+                f"total time {total_time:.2f}s, saved to {h5py_file_path}"
+            )
 
     def get_meta_data(self, data_folder, vocab):
         path = data_folder
@@ -355,6 +375,10 @@ class ForcedAlignmentBinarizer:
             else:
                 meta_data_df = df
 
+        remove_tokens = {'SP', 'AP'}
+        remove_tokens.update(self.ignored_phonemes)
+        meta_data_df = meta_data_df[~meta_data_df['ph_seq'].apply(lambda x: set(x.split()).issubset(remove_tokens))]
+
         no_label_df = pd.DataFrame(
             {"wav_path": [i for i in (path / "no_label").rglob("*.wav")]}
         )
@@ -390,12 +414,15 @@ def binarize(config_path: str):
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
+    binary_dirpath = pathlib.Path(config["data_folder"]) / "binary"
+    os.makedirs(binary_dirpath, exist_ok=True)
+
     global_config = {
         "max_length": config["max_length"],
         "melspec_config": config["melspec_config"],
         "data_augmentation_size": config["data_augmentation"]["size"],
     }
-    with open(pathlib.Path("data/binary/") / "global_config.yaml", "w") as file:
+    with open(binary_dirpath / "global_config.yaml", "w") as file:
         yaml.dump(global_config, file)
 
     ForcedAlignmentBinarizer(**config).process()

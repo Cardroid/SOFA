@@ -92,11 +92,13 @@ class MixedDataset(torch.utils.data.Dataset):
         # ph_mask
         ph_mask = np.array(item["ph_mask"])
 
+        data_name = str(item["data_name"])
+
         input_feature = np.repeat(
             input_feature, len(ph_frame) // input_feature.shape[-1], axis=-1
         )
 
-        return input_feature, ph_seq, ph_edge, ph_frame, ph_mask, label_type
+        return input_feature, ph_seq, ph_edge, ph_frame, ph_mask, label_type, data_name
 
 
 class WeightedBinningAudioBatchSampler(torch.utils.data.Sampler):
@@ -284,6 +286,7 @@ def collate_fn(batch):
     ph_mask = torch.stack([item[4] for item in batch])
 
     label_type = torch.tensor(np.array([item[5] for item in batch]))
+    data_name = [item[6] for item in batch]
 
     if augmentation_enabled:
         input_feature_lengths = torch.concat(
@@ -305,6 +308,7 @@ def collate_fn(batch):
         ph_frame,
         ph_mask,
         label_type,
+        data_name,
     )
 
 
