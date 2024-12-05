@@ -5,6 +5,8 @@ data/no_label/*
 data/weak_label/*
 data/full_label/*
 ckpt/*
+backup/*
+cache/*
 segments/*
 .vscode/*
 lightning_logs/*
